@@ -20,11 +20,11 @@ class WeekendScheduler:
     周末自动训练调度器
     
     工作流程：
-    - 每周六 14:00 自动执行周末训练
+    - 每周六 07:00 自动执行周末训练
     - 发送训练报告到配置的通知渠道
     """
 
-    TRAINING_TIME = time(14, 0)
+    TRAINING_TIME = time(7, 0)
     CHECK_INTERVAL = 60
 
     def __init__(self, notification_callback=None):
