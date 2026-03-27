@@ -37,6 +37,7 @@ from src.report_language import (
 from src.search_service import SearchService
 from src.services.social_sentiment_service import SocialSentimentService
 from src.enums import ReportType
+from src.checkpoint import get_checkpoint_manager
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import get_market_for_stock, is_market_open
 from data_provider.us_index_mapping import is_us_stock_code
@@ -228,7 +229,19 @@ class StockAnalysisPipeline:
             if not stock_name:
                 stock_name = f'股票{code}'
 
-            # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
+            # Step 2: 获取分析上下文（技术面数据）- 提前获取供 Agent 路径使用
+            context = self.db.get_analysis_context(code)
+            if context is None:
+                context = {
+                    'code': code,
+                    'stock_name': stock_name,
+                    'date': date.today().isoformat(),
+                    'data_missing': True,
+                    'today': {},
+                    'yesterday': {}
+                }
+
+            # Step 3: 获取筹码分布 - 使用统一入口，带熔断保护
             chip_data = None
             try:
                 chip_data = self.fetcher_manager.get_chip_distribution(code)
@@ -311,6 +324,7 @@ class StockAnalysisPipeline:
                     chip_data,
                     fundamental_context,
                     trend_result,
+                    analysis_date=context.get('date', ''),
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -365,20 +379,8 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) Social sentiment fetch failed: {e}")
 
-            # Step 5: 获取分析上下文（技术面数据）
-            context = self.db.get_analysis_context(code)
-
-            if context is None:
-                logger.warning(f"{stock_name}({code}) 无法获取历史行情数据，将仅基于新闻和实时行情分析")
-                context = {
-                    'code': code,
-                    'stock_name': stock_name,
-                    'date': date.today().isoformat(),
-                    'data_missing': True,
-                    'today': {},
-                    'yesterday': {}
-                }
-            
+            # Step 5: 获取分析上下文（技术面数据，已在前面提前获取）
+            # 注意: context 已在前面 Step 2 获取，此处直接使用
             # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
             enhanced_context = self._enhance_context(
                 context, 
@@ -424,6 +426,10 @@ class StockAnalysisPipeline:
                         context_snapshot=context_snapshot,
                         save_snapshot=self.save_context_snapshot
                     )
+                    # 分析结果成功保存后清除断点
+                    analysis_date = enhanced_context.get('date', '')
+                    if analysis_date:
+                        get_checkpoint_manager().clear_checkpoint(code, analysis_date)
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 保存分析历史失败: {e}")
 
@@ -659,6 +665,7 @@ class StockAnalysisPipeline:
         chip_data: Optional[ChipDistribution],
         fundamental_context: Optional[Dict[str, Any]] = None,
         trend_result: Optional[TrendAnalysisResult] = None,
+        analysis_date: str = "",
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -769,6 +776,9 @@ class StockAnalysisPipeline:
                         context_snapshot=initial_context,
                         save_snapshot=self.save_context_snapshot
                     )
+                    # 分析结果成功保存后清除断点
+                    if analysis_date:
+                        get_checkpoint_manager().clear_checkpoint(code, analysis_date)
                 except Exception as e:
                     logger.warning(f"[{code}] 保存 Agent 分析历史失败: {e}")
 

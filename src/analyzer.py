@@ -45,6 +45,7 @@ from src.report_language import (
 )
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
+from src.checkpoint import get_checkpoint_manager
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +479,48 @@ class AnalysisResult:
             "low": "⭐",
         }
         return star_map.get(str(self.confidence_level or "").strip().lower(), "⭐⭐")
+
+    @staticmethod
+    def _dict_to_analysis_result(data: Dict[str, Any], report_language: str = "zh") -> "AnalysisResult":
+        """
+        从 to_dict() 字典重建 AnalysisResult 对象
+        用于断点续传时从 JSON 文件恢复分析结果
+        """
+        return AnalysisResult(
+            code=data.get("code", ""),
+            name=data.get("name", ""),
+            sentiment_score=data.get("sentiment_score", 50),
+            trend_prediction=data.get("trend_prediction", "震荡"),
+            operation_advice=data.get("operation_advice", "持有"),
+            decision_type=data.get("decision_type", "hold"),
+            confidence_level=data.get("confidence_level", "中"),
+            report_language=report_language,
+            dashboard=data.get("dashboard"),
+            trend_analysis=data.get("trend_analysis", ""),
+            short_term_outlook=data.get("short_term_outlook", ""),
+            medium_term_outlook=data.get("medium_term_outlook", ""),
+            technical_analysis=data.get("technical_analysis", ""),
+            ma_analysis=data.get("ma_analysis", ""),
+            volume_analysis=data.get("volume_analysis", ""),
+            pattern_analysis=data.get("pattern_analysis", ""),
+            fundamental_analysis=data.get("fundamental_analysis", ""),
+            sector_position=data.get("sector_position", ""),
+            company_highlights=data.get("company_highlights", ""),
+            news_summary=data.get("news_summary", ""),
+            market_sentiment=data.get("market_sentiment", ""),
+            hot_topics=data.get("hot_topics", ""),
+            analysis_summary=data.get("analysis_summary", ""),
+            key_points=data.get("key_points", ""),
+            risk_warning=data.get("risk_warning", ""),
+            buy_reason=data.get("buy_reason", ""),
+            market_snapshot=data.get("market_snapshot"),
+            search_performed=data.get("search_performed", False),
+            success=data.get("success", True),
+            error_message=data.get("error_message"),
+            current_price=data.get("current_price"),
+            change_pct=data.get("change_pct"),
+            model_used=data.get("model_used"),
+        )
 
 
 class GeminiAnalyzer:
@@ -1169,7 +1212,45 @@ class GeminiAnalyzer:
                 model_used=None,
                 report_language=report_language,
             )
-        
+
+        # ========== 断点续传检查 ==========
+        analysis_date = context.get('date', '')
+        checkpoint_mgr = get_checkpoint_manager()
+        if analysis_date and checkpoint_mgr.has_checkpoint(code, analysis_date):
+            ck_status = checkpoint_mgr.get_status(code, analysis_date)
+            if ck_status == 'completed':
+                ck_data = checkpoint_mgr.load_checkpoint(code, analysis_date)
+                if ck_data and 'result' in ck_data:
+                    logger.info(
+                        f"[断点续传] {name}({code}) 找到已完成断点，直接恢复: "
+                        f"saved_at={ck_data.get('saved_at')}"
+                    )
+                    result_dict = ck_data['result']
+                    result = self._dict_to_analysis_result(result_dict, report_language)
+                    result.raw_response = ck_data.get('raw_response')
+                    result.model_used = ck_data.get('model_used')
+                    logger.info(f"[断点续传] {name}({code}) 已从断点恢复结果")
+                    return result
+            elif ck_status == 'in_progress':
+                logger.warning(
+                    f"[断点续传] {name}({code}) 存在进行中的断点 "
+                    f"(saved_at={checkpoint_mgr.load_checkpoint(code, analysis_date).get('saved_at') if checkpoint_mgr.load_checkpoint(code, analysis_date) else 'unknown'})，"
+                    f"将重新发起 LLM 调用"
+                )
+                checkpoint_mgr.clear_checkpoint(code, analysis_date)
+
+        # 获取用于断点的上下文摘要（仅用于日志）
+        checkpoint_context = {
+            'code': code,
+            'date': analysis_date,
+            'name': name,
+        }
+
+        # 跨 try-except 块共享的变量
+        total_elapsed = 0.0
+        last_response_text = ""
+        last_model_used = ""
+
         try:
             # 格式化输入（包含技术面数据和新闻）
             prompt = self._format_prompt(context, name, news_context, report_language=report_language)
@@ -1194,10 +1275,17 @@ class GeminiAnalyzer:
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
 
+            # 保存进行中断点（避免 LLM 调用过程中断后重复调用）
+            if analysis_date:
+                checkpoint_mgr.save_in_progress(code, analysis_date, checkpoint_context)
+
             # 使用 litellm 调用（支持完整性校验重试）
             current_prompt = prompt
             retry_count = 0
             max_retries = config.report_integrity_retry if config.report_integrity_enabled else 0
+            total_elapsed = 0.0
+            last_response_text = ""
+            last_model_used = model_name
 
             while True:
                 start_time = time.time()
@@ -1207,6 +1295,9 @@ class GeminiAnalyzer:
                     system_prompt=system_prompt,
                 )
                 elapsed = time.time() - start_time
+                total_elapsed += elapsed
+                last_response_text = response_text
+                last_model_used = model_used
 
                 # 记录响应信息
                 logger.info(
@@ -1257,10 +1348,29 @@ class GeminiAnalyzer:
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
 
+            # 保存完成断点
+            if analysis_date:
+                checkpoint_mgr.save_completed(
+                    code, analysis_date,
+                    result.to_dict(),
+                    last_response_text,
+                    total_elapsed,
+                    last_model_used,
+                )
+
             return result
             
         except Exception as e:
             logger.error(f"AI 分析 {name}({code}) 失败: {e}")
+            # 保存失败断点
+            if analysis_date:
+                checkpoint_mgr.save_failed(
+                    code, analysis_date,
+                    str(e),
+                    last_response_text if last_response_text else None,
+                    total_elapsed,
+                    last_model_used if last_model_used else None,
+                )
             return AnalysisResult(
                 code=code,
                 name=name,
