@@ -13,18 +13,22 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from src.storage import get_db
+from sqlalchemy import select, desc
 
 logger = logging.getLogger(__name__)
+
+
+def get_db_session():
+    """获取数据库 Session 的便捷函数"""
+    from src.storage import get_db
+    db = get_db()
+    return db.get_session()
 
 
 class FactorVersionManager:
     """
     因子版本管理器
     """
-
-    def __init__(self):
-        self.db = get_db()
 
     def create_version(
         self,
@@ -83,27 +87,36 @@ class FactorVersionManager:
                 created_at=datetime.now(),
                 status="active"
             )
-            self.db.add(record)
-            self.db.commit()
+
+            session = get_db_session()
+            try:
+                session.add(record)
+                session.commit()
+            finally:
+                session.close()
+
         except Exception as e:
-            logger.warning(f"数据库写入失败，使用内存模式: {e}")
+            logger.warning(f"数据库写入失败: {e}")
 
         return version
 
     def deprecate_version(self, version: str, reason: str = ""):
         """标记版本为废弃"""
         try:
-            from src.quant.models.quant_models import FactorVersion
-
             record = self.get_version_record(version)
             if record:
-                record.status = "deprecated"
-                record.description = (
-                    f"{record.description}\n\n"
-                    f"[Deprecated at {datetime.now().isoformat()}]\n"
-                    f"Reason: {reason}"
-                )
-                self.db.commit()
+                session = get_db_session()
+                try:
+                    record.status = "deprecated"
+                    record.description = (
+                        f"{record.description}\n\n"
+                        f"[Deprecated at {datetime.now().isoformat()}]\n"
+                        f"Reason: {reason}"
+                    )
+                    session.commit()
+                finally:
+                    session.close()
+
         except Exception as e:
             logger.warning(f"数据库更新失败: {e}")
 
@@ -112,11 +125,15 @@ class FactorVersionManager:
         try:
             from src.quant.models.quant_models import FactorVersion
 
-            return (
-                self.db.query(FactorVersion)
-                .filter_by(version=version)
-                .first()
-            )
+            session = get_db_session()
+            try:
+                result = session.execute(
+                    select(FactorVersion).where(FactorVersion.version == version)
+                ).scalar_one_or_none()
+                return result
+            finally:
+                session.close()
+
         except Exception:
             return None
 
@@ -130,19 +147,23 @@ class FactorVersionManager:
         try:
             from src.quant.models.quant_models import FactorVersion
 
-            query = self.db.query(FactorVersion)
+            session = get_db_session()
+            try:
+                query = select(FactorVersion)
 
-            if name:
-                query = query.filter_by(name=name)
-            if status:
-                query = query.filter_by(status=status)
+                if name:
+                    query = query.where(FactorVersion.name == name)
+                if status:
+                    query = query.where(FactorVersion.status == status)
 
-            return (
-                query
-                .order_by(FactorVersion.created_at.desc())
-                .limit(limit)
-                .all()
-            )
+                query = query.order_by(desc(FactorVersion.created_at)).limit(limit)
+
+                result = session.execute(query)
+                return list(result.scalars().all())
+
+            finally:
+                session.close()
+
         except Exception as e:
             logger.warning(f"数据库查询失败: {e}")
             return []
@@ -183,13 +204,19 @@ class FactorVersionManager:
         try:
             from src.quant.models.quant_models import FactorVersion
 
-            record = (
-                self.db.query(FactorVersion)
-                .filter_by(name=name, status="active")
-                .order_by(FactorVersion.created_at.desc())
-                .first()
-            )
-            return record.version if record else None
+            session = get_db_session()
+            try:
+                result = session.execute(
+                    select(FactorVersion)
+                    .where(FactorVersion.name == name, FactorVersion.status == "active")
+                    .order_by(desc(FactorVersion.created_at))
+                    .limit(1)
+                ).scalar_one_or_none()
+
+                return result.version if result else None
+            finally:
+                session.close()
+
         except Exception:
             return None
 
@@ -219,16 +246,22 @@ class FactorVersionManager:
         try:
             from src.quant.models.quant_models import FactorImportance
 
-            for rank, (fname, score) in enumerate(importance_list, 1):
-                record = FactorImportance(
-                    version=version,
-                    factor_name=fname,
-                    importance_score=score,
-                    rank=rank,
-                    calculated_at=datetime.now()
-                )
-                self.db.add(record)
+            session = get_db_session()
+            try:
+                for rank, (fname, score) in enumerate(importance_list, 1):
+                    record = FactorImportance(
+                        version=version,
+                        factor_name=fname,
+                        importance_score=score,
+                        rank=rank,
+                        calculated_at=datetime.now()
+                    )
+                    session.add(record)
 
-            self.db.commit()
+                session.commit()
+
+            finally:
+                session.close()
+
         except Exception as e:
             logger.warning(f"保存重要性失败: {e}")

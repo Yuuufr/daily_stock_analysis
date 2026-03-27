@@ -9,7 +9,16 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from sqlalchemy import select
+
 logger = logging.getLogger(__name__)
+
+
+def get_db_session():
+    """获取数据库 Session 的便捷函数"""
+    from src.storage import get_db
+    db = get_db()
+    return db.get_session()
 
 
 class StrategyRanker:
@@ -47,7 +56,7 @@ class StrategyRanker:
 
         return scores
 
-    def _load_all_strategy_history(self) -> Dict[str, any]:
+    def _load_all_strategy_history(self) -> Dict:
         """
         从数据库加载所有策略历史信号
         
@@ -55,36 +64,36 @@ class StrategyRanker:
             Dict[strategy_id, DataFrame]
         """
         try:
-            from src.storage import get_db
             from src.quant.models.quant_models import StrategySignal, StrategySignalResult
 
-            db = get_db()
+            session = get_db_session()
+            try:
+                result = session.execute(
+                    select(StrategySignal)
+                ).scalars().all()
 
-            signals = (
-                db.query(StrategySignal)
-                .filter(StrategySignal.signal_id == StrategySignalResult.signal_id)
-                .all()
-            )
+                history_map = {}
+                for signal in result:
+                    if signal.strategy_id not in history_map:
+                        history_map[signal.strategy_id] = []
 
-            history_map = {}
-            for signal in signals:
-                if signal.strategy_id not in history_map:
-                    history_map[signal.strategy_id] = []
+                    if hasattr(signal, 'future_return') and signal.future_return is not None:
+                        history_map[signal.strategy_id].append({
+                            "hit": signal.hit if hasattr(signal, "hit") else None,
+                            "future_return": signal.future_return,
+                            "regime": signal.regime
+                        })
 
-                if signal.future_return is not None:
-                    history_map[signal.strategy_id].append({
-                        "hit": signal.hit if hasattr(signal, "hit") else None,
-                        "future_return": signal.future_return,
-                        "regime": signal.regime
-                    })
+                import pandas as pd
+                result_dict = {}
+                for strategy_id, records in history_map.items():
+                    if records:
+                        result_dict[strategy_id] = pd.DataFrame(records)
 
-            import pandas as pd
-            result = {}
-            for strategy_id, records in history_map.items():
-                if records:
-                    result[strategy_id] = pd.DataFrame(records)
+                return result_dict
 
-            return result
+            finally:
+                session.close()
 
         except Exception as e:
             logger.warning(f"加载策略历史失败: {e}")
@@ -92,37 +101,43 @@ class StrategyRanker:
 
     def _cache_scores(self, scores: List):
         """缓存评分到数据库"""
+        if not scores:
+            return
+
         try:
-            from src.storage import get_db
             from src.quant.models.quant_models import StrategyPerformance
 
-            db = get_db()
+            session = get_db_session()
+            try:
+                for score in scores:
+                    try:
+                        regime = "neutral"
+                        if "_" in score.strategy_id:
+                            parts = score.strategy_id.split("_")
+                            if len(parts) > 1:
+                                potential_regime = parts[-1]
+                                if potential_regime in ["bull", "bear", "neutral"]:
+                                    regime = potential_regime
 
-            for score in scores:
-                try:
-                    regime = "neutral"
-                    if "_" in score.strategy_id:
-                        parts = score.strategy_id.split("_")
-                        if len(parts) > 1:
-                            potential_regime = parts[-1]
-                            if potential_regime in ["bull", "bear", "neutral"]:
-                                regime = potential_regime
+                        record = StrategyPerformance(
+                            strategy_id=score.strategy_id,
+                            regime=regime,
+                            win_rate=score.win_rate,
+                            avg_return=score.avg_return,
+                            max_drawdown=score.max_drawdown,
+                            sample_count=score.sample_count,
+                            calculated_at=datetime.now(),
+                            is_active=1
+                        )
+                        session.add(record)
 
-                    record = StrategyPerformance(
-                        strategy_id=score.strategy_id,
-                        regime=regime,
-                        win_rate=score.win_rate,
-                        avg_return=score.avg_return,
-                        max_drawdown=score.max_drawdown,
-                        sample_count=score.sample_count,
-                        calculated_at=datetime.now(),
-                        is_active=1
-                    )
-                    db.merge(record)
-                except Exception as e:
-                    logger.debug(f"缓存评分失败: {e}")
+                    except Exception as e:
+                        logger.debug(f"缓存评分失败: {e}")
 
-            db.commit()
+                session.commit()
+
+            finally:
+                session.close()
 
         except Exception as e:
             logger.warning(f"数据库缓存失败: {e}")

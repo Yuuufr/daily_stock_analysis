@@ -13,7 +13,16 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, List
 
+from sqlalchemy import select, desc
+
 logger = logging.getLogger(__name__)
+
+
+def get_db_session():
+    """获取数据库 Session 的便捷函数"""
+    from src.storage import get_db
+    db = get_db()
+    return db.get_session()
 
 
 class ModelManager:
@@ -26,7 +35,6 @@ class ModelManager:
     PYTORCH_DIR = MODEL_DIR / "pytorch"
 
     def __init__(self):
-        self.db = None
         self.current_version: Optional[str] = None
         self._ensure_dirs()
 
@@ -109,10 +117,8 @@ class ModelManager:
     ):
         """保存到数据库"""
         try:
-            from src.storage import get_db
             from src.quant.models.quant_models import ModelVersion
 
-            db = get_db()
             record = ModelVersion(
                 version=version,
                 model_type=model_type,
@@ -124,8 +130,14 @@ class ModelManager:
                 status="active",
                 regime_context=regime_context
             )
-            db.add(record)
-            db.commit()
+
+            session = get_db_session()
+            try:
+                session.add(record)
+                session.commit()
+            finally:
+                session.close()
+
         except Exception as e:
             logger.warning(f"数据库保存失败: {e}")
 
@@ -161,16 +173,25 @@ class ModelManager:
     ) -> List:
         """列出模型版本"""
         try:
-            from src.storage import get_db
             from src.quant.models.quant_models import ModelVersion
 
-            db = get_db()
-            query = db.query(ModelVersion)
-            if model_type:
-                query = query.filter_by(model_type=model_type)
-            if status:
-                query = query.filter_by(status=status)
-            return query.order_by(ModelVersion.created_at.desc()).all()
+            session = get_db_session()
+            try:
+                query = select(ModelVersion)
+
+                if model_type:
+                    query = query.where(ModelVersion.model_type == model_type)
+                if status:
+                    query = query.where(ModelVersion.status == status)
+
+                query = query.order_by(desc(ModelVersion.created_at))
+
+                result = session.execute(query)
+                return list(result.scalars().all())
+
+            finally:
+                session.close()
+
         except Exception as e:
             logger.warning(f"数据库查询失败: {e}")
             return []
@@ -183,15 +204,23 @@ class ModelManager:
     def deprecate_version(self, version: str, reason: str = ""):
         """废弃指定版本"""
         try:
-            from src.storage import get_db
             from src.quant.models.quant_models import ModelVersion
 
-            db = get_db()
-            record = db.query(ModelVersion).filter_by(version=version).first()
-            if record:
-                record.status = "deprecated"
-                db.commit()
-                logger.info(f"版本 {version} 已废弃: {reason}")
+            session = get_db_session()
+            try:
+                result = session.execute(
+                    select(ModelVersion).where(ModelVersion.version == version)
+                )
+                record = result.scalar_one_or_none()
+
+                if record:
+                    record.status = "deprecated"
+                    session.commit()
+                    logger.info(f"版本 {version} 已废弃: {reason}")
+
+            finally:
+                session.close()
+
         except Exception as e:
             logger.warning(f"废弃版本失败: {e}")
 
@@ -201,19 +230,27 @@ class ModelManager:
 
         latest = None
         try:
-            from src.storage import get_db
             from src.quant.models.quant_models import ModelVersion
 
-            db = get_db()
-            record = (
-                db.query(ModelVersion)
-                .filter_by(model_type=model_type, model_name=model_name)
-                .filter(ModelVersion.status.in_(["active", "shadow"]))
-                .order_by(ModelVersion.created_at.desc())
-                .first()
-            )
-            if record:
-                latest = record.version
+            session = get_db_session()
+            try:
+                result = session.execute(
+                    select(ModelVersion)
+                    .where(
+                        ModelVersion.model_type == model_type,
+                        ModelVersion.model_name == model_name,
+                        ModelVersion.status.in_(["active", "shadow"])
+                    )
+                    .order_by(desc(ModelVersion.created_at))
+                    .limit(1)
+                )
+                record = result.scalar_one_or_none()
+                if record:
+                    latest = record.version
+
+            finally:
+                session.close()
+
         except Exception:
             pass
 
