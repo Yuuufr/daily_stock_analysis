@@ -3,11 +3,12 @@
 Weekend Scheduler
 
 周末自动训练调度器
-每周六 14:00 自动执行
+每周六 07:00 自动执行
 """
 
 import logging
 from datetime import datetime, time
+from typing import Dict
 import threading
 import time as time_module
 from pathlib import Path
