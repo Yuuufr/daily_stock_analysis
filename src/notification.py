@@ -1135,8 +1135,10 @@ class NotificationService(
                 # 股票名称
                 stock_name = self._get_display_name(result, report_language)
                 
-                # 标题行：信号等级 + 股票名称
-                lines.append(f"### {signal_emoji} **{signal_text}** | {stock_name}({result.code})")
+                # 标题行：信号等级 + 股票名称 + 评分
+                score_label = labels.get('score_label', '评分')
+                score_str = f" | {score_label} {result.sentiment_score}" if getattr(result, 'sentiment_score', None) is not None else ""
+                lines.append(f"### {signal_emoji} **{signal_text}** | {stock_name}({result.code}){score_str}")
                 lines.append("")
                 
                 # 核心决策（一句话）
