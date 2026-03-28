@@ -36,6 +36,7 @@ from src.report_language import (
 )
 from src.search_service import SearchService
 from src.services.social_sentiment_service import SocialSentimentService
+from src.services.trader_service import get_trader_service
 from src.enums import ReportType
 from src.checkpoint import get_checkpoint_manager
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -1418,7 +1419,40 @@ class StockAnalysisPipeline:
                     else:
                         wechat_success = self.notifier.send_to_wechat(dashboard_content)
 
-                # 其他渠道：发完整报告（避免自定义 Webhook 被 wechat 截断逻辑污染）
+                # LLM模拟交易员：根据分析结果决定交易
+                trader_success = False
+                if getattr(self.config, 'trader_enabled', False) and NotificationChannel.WECHAT in channels:
+                    try:
+                        trader_service = get_trader_service()
+                        db = get_db()
+                        with db.session_scope() as session:
+                            trader_service.check_month_reset(session)
+                            analysis_data = [
+                                {
+                                    "code": r.code,
+                                    "name": r.name,
+                                    "sentiment_score": r.sentiment_score,
+                                    "operation_advice": r.operation_advice,
+                                    "current_price": getattr(r, 'current_price', None),
+                                    "ma5": r.dashboard.get('data_perspective', {}).get('price_position', {}).get('ma5') if r.dashboard else None,
+                                    "ma10": r.dashboard.get('data_perspective', {}).get('price_position', {}).get('ma10') if r.dashboard else None,
+                                    "ma20": r.dashboard.get('data_perspective', {}).get('price_position', {}).get('ma20') if r.dashboard else None,
+                                }
+                                for r in results
+                            ]
+                            thoughts, actions = trader_service.decide_trades(
+                                session, analysis_data, date.today()
+                            )
+                            if actions:
+                                executed = trader_service.execute_trades(session, actions, date.today())
+                                logger.info(f"LLM交易员执行了 {len(executed)} 笔交易")
+                            account_info = trader_service.get_account_info(session)
+                            trader_report = trader_service.format_trader_report(account_info, thoughts)
+                            logger.info(f"LLM交易员报告:\n{trader_report}")
+                            trader_success = self.notifier.send_to_wechat(trader_report)
+                    except Exception as e:
+                        logger.error(f"LLM交易员执行失败: {e}")
+
                 non_wechat_success = False
                 stock_email_groups = getattr(self.config, 'stock_email_groups', []) or []
                 for channel in channels:

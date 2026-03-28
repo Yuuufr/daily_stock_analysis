@@ -620,6 +620,80 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class TraderAccount(Base):
+    """LLM模拟交易员账户"""
+
+    __tablename__ = 'trader_account'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), nullable=False, default='模拟账户')
+    initial_cash = Column(Float, nullable=False, default=50000.0)
+    current_cash = Column(Float, nullable=False, default=50000.0)
+    total_market_value = Column(Float, nullable=False, default=0.0)
+    total_equity = Column(Float, nullable=False, default=50000.0)
+    total_return_pct = Column(Float, nullable=False, default=0.0)
+    month_return_pct = Column(Float, nullable=False, default=0.0)
+    month_start_equity = Column(Float, nullable=False, default=50000.0)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    positions = relationship('TraderPosition', back_populates='account', cascade='all, delete-orphan')
+    trades = relationship('TraderTrade', back_populates='account', cascade='all, delete-orphan')
+
+
+class TraderPosition(Base):
+    """LLM交易员持仓"""
+
+    __tablename__ = 'trader_positions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('trader_account.id'), nullable=False)
+    symbol = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=True)
+    quantity = Column(Float, nullable=False, default=0.0)
+    avg_cost = Column(Float, nullable=False, default=0.0)
+    last_price = Column(Float, nullable=False, default=0.0)
+    market_value = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl_pct = Column(Float, nullable=False, default=0.0)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    account = relationship('TraderAccount', back_populates='positions')
+
+    __table_args__ = (
+        UniqueConstraint('account_id', 'symbol', name='uix_trader_position_account_symbol'),
+    )
+
+
+class TraderTrade(Base):
+    """LLM交易员交易记录"""
+
+    __tablename__ = 'trader_trades'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('trader_account.id'), nullable=False)
+    symbol = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    side = Column(String(8), nullable=False)  # buy/sell
+    quantity = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    amount = Column(Float, nullable=False)
+    fee = Column(Float, nullable=False, default=0.0)
+    realized_pnl = Column(Float, nullable=True)
+    trade_reason = Column(Text, nullable=True)
+    trade_mood = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    account = relationship('TraderAccount', back_populates='trades')
+
+    __table_args__ = (
+        Index('ix_trader_trade_account_date', 'account_id', 'trade_date'),
+    )
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
