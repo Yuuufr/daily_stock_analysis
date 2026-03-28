@@ -143,8 +143,8 @@ class StockRepository:
         with self.db.get_session() as session:
             row = session.execute(
                 select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date <= analysis_date))
-                .order_by(desc(StockDaily.date))
+                .where(and_(StockDaily.code == code, func.date(StockDaily.timestamp) <= analysis_date))
+                .order_by(desc(func.date(StockDaily.timestamp)))
                 .limit(1)
             ).scalar_one_or_none()
             return row
@@ -154,8 +154,8 @@ class StockRepository:
         with self.db.get_session() as session:
             rows = session.execute(
                 select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date > analysis_date))
-                .order_by(StockDaily.date)
+                .where(and_(StockDaily.code == code, func.date(StockDaily.timestamp) > analysis_date))
+                .order_by(func.date(StockDaily.timestamp))
                 .limit(eval_window_days)
             ).scalars().all()
             return list(rows)

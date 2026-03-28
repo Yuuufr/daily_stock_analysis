@@ -693,10 +693,10 @@ class PortfolioRepository:
                 .where(
                     and_(
                         StockDaily.code == symbol,
-                        StockDaily.date <= as_of,
+                        func.date(StockDaily.timestamp) <= as_of,
                     )
                 )
-                .order_by(desc(StockDaily.date))
+                .order_by(desc(func.date(StockDaily.timestamp)))
                 .limit(1)
             ).scalar_one_or_none()
             if row is None or row.close is None:
