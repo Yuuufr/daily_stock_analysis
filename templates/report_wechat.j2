@@ -8,6 +8,13 @@
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
 {% endfor %}
 {% else %}
+{% if results|length > 1 %}
+**🏆 右侧思维 Top10 强势股**
+{% for e in enriched[:10] %}
+{{ loop.index }}. {{ e.signal_emoji }}{{ e.stock_name }} | {{ labels.score_label }}{{ e.result.sentiment_score }} | {{ e.localized_operation_advice }}
+{% endfor %}
+---
+{% endif %}
 {% for e in enriched %}
 {% set result = e.result %}
 {% set dashboard = result.dashboard if result.dashboard else {} %}
