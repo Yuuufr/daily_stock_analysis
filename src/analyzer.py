@@ -1344,6 +1344,19 @@ class GeminiAnalyzer:
                     )
                     break
 
+            # 兜底 LLM：当 one_sentence 为占位符时，基于已有数据生成决策
+            one_sentence = (
+                result.dashboard.get("core_conclusion", {})
+                .get("one_sentence", "")
+            )
+            if _is_value_placeholder(one_sentence):
+                logger.info("[LLM兜底] one_sentence 为占位符，调用兜底 LLM 生成决策")
+                self._fallback_one_sentence(result, context, report_language=report_language)
+                logger.info(
+                    "[LLM兜底] 兜底结果: %s",
+                    result.dashboard.get("core_conclusion", {}).get("one_sentence", ""),
+                )
+
             persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
@@ -1755,6 +1768,410 @@ class GeminiAnalyzer:
             return f"{float(value):.2f}"
         except (TypeError, ValueError):
             return 'N/A'
+
+    def _fallback_one_sentence(
+        self,
+        result: "AnalysisResult",
+        context: Dict[str, Any],
+        report_language: str = "zh",
+    ) -> None:
+        """
+        兜底 LLM：当 one_sentence 为占位符时，基于已有数据生成专业的一句话决策。
+
+        采用右侧思维：强调等待确认信号、风险优先、顺势而为。
+
+        Args:
+            result: 分析结果对象（会原地修改 dashboard.core_conclusion.one_sentence）
+            context: 技术面数据上下文
+            report_language: 报告语言
+        """
+        report_language = normalize_report_language(report_language)
+        today = context.get('today', {}) or {}
+        realtime = context.get('realtime', {}) or {}
+
+        current_price = realtime.get('price') or today.get('close')
+        ma5 = today.get('ma5')
+        ma10 = today.get('ma10')
+        ma20 = today.get('ma20')
+        pct_chg = today.get('pct_chg')
+        volume_ratio = realtime.get('volume_ratio')
+        turnover_rate = realtime.get('turnover_rate')
+        bias_ma5 = None
+        if ma5 and current_price:
+            try:
+                bias_ma5 = (float(current_price) - float(ma5)) / float(ma5) * 100
+            except (TypeError, ValueError, ZeroDivisionError):
+                bias_ma5 = None
+
+        bias_ma10 = None
+        if ma10 and current_price:
+            try:
+                bias_ma10 = (float(current_price) - float(ma10)) / float(ma10) * 100
+            except (TypeError, ValueError, ZeroDivisionError):
+                bias_ma10 = None
+
+        bias_ma20 = None
+        if ma20 and current_price:
+            try:
+                bias_ma20 = (float(current_price) - float(ma20)) / float(ma20) * 100
+            except (TypeError, ValueError, ZeroDivisionError):
+                bias_ma20 = None
+
+        ma_status = context.get('ma_status', '')
+        ma_alignment = self._evaluate_ma_alignment(ma5, ma10, ma20)
+        trend_data = context.get('trend') or {}
+        signal_score = trend_data.get('signal_score', 50)
+
+        prompt = self._build_one_sentence_fallback_prompt(
+            context=context,
+            current_price=current_price,
+            ma5=ma5,
+            ma10=ma10,
+            ma20=ma20,
+            pct_chg=pct_chg,
+            bias_ma5=bias_ma5,
+            bias_ma10=bias_ma10,
+            bias_ma20=bias_ma20,
+            volume_ratio=volume_ratio,
+            turnover_rate=turnover_rate,
+            ma_status=ma_status,
+            ma_alignment=ma_alignment,
+            signal_score=signal_score,
+            report_language=report_language,
+        )
+
+        try:
+            text = self.generate_text(
+                prompt,
+                max_tokens=256,
+                temperature=0.2,
+            )
+            if text and text.strip():
+                one_sentence = text.strip()
+                if len(one_sentence) > 50:
+                    one_sentence = one_sentence[:47] + "..."
+                dashboard = result.dashboard or {}
+                result.dashboard = dashboard
+                if "core_conclusion" not in dashboard:
+                    dashboard["core_conclusion"] = {}
+                result.dashboard["core_conclusion"]["one_sentence"] = one_sentence
+
+                if not result.operation_advice or _is_value_placeholder(result.operation_advice):
+                    result.operation_advice = self._derive_operation_advice(
+                        ma5=ma5,
+                        ma10=ma10,
+                        ma20=ma20,
+                        bias_ma5=bias_ma5,
+                        ma_status=ma_status,
+                        ma_alignment=ma_alignment,
+                        signal_score=signal_score,
+                        report_language=report_language,
+                    )
+        except Exception as e:
+            logger.warning("[LLM兜底] one_sentence 生成失败: %s", e)
+
+    def _evaluate_ma_alignment(
+        self,
+        ma5: Optional[float],
+        ma10: Optional[float],
+        ma20: Optional[float],
+    ) -> str:
+        """评估均线排列状态。"""
+        if not all([ma5, ma10, ma20]):
+            return "排列未知"
+        if ma5 > ma10 > ma20:
+            return "多头排列"
+        elif ma5 < ma10 < ma20:
+            return "空头排列"
+        elif ma5 > ma10 and ma10 < ma20:
+            return "均线混乱"
+        else:
+            return "均线混乱"
+
+    def _build_one_sentence_fallback_prompt(
+        self,
+        context: Dict[str, Any],
+        current_price: Optional[float],
+        ma5: Optional[float],
+        ma10: Optional[float],
+        ma20: Optional[float],
+        pct_chg: Optional[float],
+        bias_ma5: Optional[float],
+        bias_ma10: Optional[float],
+        bias_ma20: Optional[float],
+        volume_ratio: Optional[float],
+        turnover_rate: Optional[float],
+        ma_status: str,
+        ma_alignment: str,
+        signal_score: float,
+        report_language: str = "zh",
+    ) -> str:
+        """构建专业、右侧思维的一句话决策兜底提示词。"""
+        report_language = normalize_report_language(report_language)
+        code = context.get('code', 'Unknown')
+        stock_name = context.get('stock_name') or context.get('name') or f'股票{code}'
+        if stock_name.startswith('股票') and stock_name == f'股票{code}':
+            stock_name = STOCK_NAME_MAP.get(code, stock_name)
+
+        if report_language == "en":
+            return self._build_one_sentence_fallback_prompt_en(
+                code=code,
+                stock_name=stock_name,
+                current_price=current_price,
+                ma5=ma5,
+                ma10=ma10,
+                ma20=ma20,
+                pct_chg=pct_chg,
+                bias_ma5=bias_ma5,
+                bias_ma10=bias_ma10,
+                bias_ma20=bias_ma20,
+                volume_ratio=volume_ratio,
+                turnover_rate=turnover_rate,
+                ma_alignment=ma_alignment,
+                signal_score=signal_score,
+            )
+
+        unknown = "数据缺失"
+        price_str = f"{current_price:.2f}" if current_price else unknown
+        ma5_str = f"{ma5:.2f}" if ma5 else unknown
+        ma10_str = f"{ma10:.2f}" if ma10 else unknown
+        ma20_str = f"{ma20:.2f}" if ma20 else unknown
+        pct_str = f"{pct_chg:+.2f}%" if pct_chg is not None else unknown
+        b5_str = f"{bias_ma5:+.2f}%" if bias_ma5 is not None else unknown
+        b10_str = f"{bias_ma10:+.2f}%" if bias_ma10 is not None else unknown
+        b20_str = f"{bias_ma20:+.2f}%" if bias_ma20 is not None else unknown
+        vol_str = f"{volume_ratio:.2f}" if volume_ratio is not None else unknown
+        turnover_str = f"{turnover_rate:.2f}%" if turnover_rate is not None else unknown
+
+        return f"""# 专业交易决策：右侧思维分析
+
+## 角色
+你是一位严谨的趋势交易分析师，采用右侧思维进行决策。右侧思维的核心原则是：
+1. **等待确认信号** - 不预判底部/顶部，而是等趋势确认后再行动
+2. **风险优先** - 永远先考虑如果错了怎么办
+3. **顺势而为** - 只在高概率方向明确时操作
+4. **宁错过勿做错** - 错过机会不会亏钱，但做错会
+
+## 分析标的
+{stock_name}({code})
+
+## 已知技术数据
+| 指标 | 数值 | 含义 |
+|------|------|------|
+| 当前价 | {price_str} | 今日收盘/实时价 |
+| MA5 | {ma5_str} | 短期成本线 |
+| MA10 | {ma10_str} | 中期成本线 |
+| MA20 | {ma20_str} | 中长期成本线 |
+| 涨跌幅 | {pct_str} | 今日涨跌 |
+| 偏离MA5 | {b5_str} | 短期超买超卖 |
+| 偏离MA10 | {b10_str} | 中期超买超卖 |
+| 偏离MA20 | {b20_str} | 中长期超买超卖 |
+| 量比 | {vol_str} | 今日量能相对昨日 |
+| 换手率 | {turnover_str} | 市场活跃度 |
+| 均线排列 | {ma_alignment} | 多头/空头/混乱 |
+| 信号评分 | {signal_score}/100 | 系统综合评分 |
+
+## 右侧思维决策框架
+
+### 观望的触发条件（满足任一即观望）
+- 价格在MA5下方运行 → 短期趋势向下
+- 乖离率MA5超过+3% → 短期超买，回调风险大
+- 乖离率MA5低于-5% → 短期超卖，可能加速赶底
+- 均线非多头排列 → 趋势不健康
+- 量比<0.8 → 缩量，观望为主
+- 信号评分<40 → 系统偏空
+
+### 买入的右侧确认条件（需同时满足）
+- 价格在MA5上方运行
+- 乖离率MA5在-2%~+2%区间（不过热不极冷）
+- 均线多头排列（MA5>MA10>MA20）
+- 量比>1.0（有资金推动）
+- 等待回调到支撑位再买（右侧确认支撑）
+
+### 卖出/减仓的右侧确认条件
+- 价格有效跌破MA5且确认
+- 出现放量大阴线
+- 乖离率异常放大
+
+## 输出要求
+基于以上数据，严格按右侧思维分析，输出一句话决策（限30字以内）。
+
+格式：**操作方向 + 核心理由**
+
+决策原则：
+- 优先输出"观望"（右侧思维核心）
+- 除非有明确右侧信号，否则不轻易说"买入"
+- 理由要具体（用数据说话）
+
+## 输出示例
+- "观望，MA5下方运行等待右侧企稳"
+- "观望，乖离率+4%短期超买不追高"
+- "观望，缩量整理等待方向选择"
+- "观望，均线空头排列等待修复"
+- "买入，MA5上方+缩量回踩企稳"
+
+请输出一句话（只需纯文本，不要任何解释）："""
+
+    def _build_one_sentence_fallback_prompt_en(
+        self,
+        code: str,
+        stock_name: str,
+        current_price: Optional[float],
+        ma5: Optional[float],
+        ma10: Optional[float],
+        ma20: Optional[float],
+        pct_chg: Optional[float],
+        bias_ma5: Optional[float],
+        bias_ma10: Optional[float],
+        bias_ma20: Optional[float],
+        volume_ratio: Optional[float],
+        turnover_rate: Optional[float],
+        ma_alignment: str,
+        signal_score: float,
+    ) -> str:
+        """Build professional right-side thinking fallback prompt for English."""
+        unknown = "N/A"
+        price_str = f"{current_price:.2f}" if current_price else unknown
+        ma5_str = f"{ma5:.2f}" if ma5 else unknown
+        ma10_str = f"{ma10:.2f}" if ma10 else unknown
+        ma20_str = f"{ma20:.2f}" if ma20 else unknown
+        pct_str = f"{pct_chg:+.2f}%" if pct_chg is not None else unknown
+        b5_str = f"{bias_ma5:+.2f}%" if bias_ma5 is not None else unknown
+        b10_str = f"{bias_ma10:+.2f}%" if bias_ma10 is not None else unknown
+        b20_str = f"{bias_ma20:+.2f}%" if bias_ma20 is not None else unknown
+        vol_str = f"{volume_ratio:.2f}" if volume_ratio is not None else unknown
+        turnover_str = f"{turnover_rate:.2f}%" if turnover_rate is not None else unknown
+
+        return f"""# Professional Trading Decision: Right-Side Thinking
+
+## Role
+You are a rigorous trend trading analyst using RIGHT-SIDE THINKING principles:
+1. Wait for confirmation signals - never predict bottoms/tops
+2. Risk first - always consider "what if I'm wrong?"
+3. Trade with the trend - only act when high-probability direction is clear
+4. It's okay to miss opportunities - losing money is worse
+
+## Analysis Target
+{stock_name}({code})
+
+## Available Technical Data
+| Indicator | Value | Meaning |
+|-----------|-------|---------|
+| Current Price | {price_str} | Today's close/realtime |
+| MA5 | {ma5_str} | Short-term cost line |
+| MA10 | {ma10_str} | Medium-term cost line |
+| MA20 | {ma20_str} | Medium-long term cost |
+| Change | {pct_str} | Today's change |
+| Bias MA5 | {b5_str} | Short-term overbought/sold |
+| Bias MA10 | {b10_str} | Medium-term overbought/sold |
+| Bias MA20 | {b20_str} | Medium-long term |
+| Volume Ratio | {vol_str} | Relative volume |
+| Turnover | {turnover_str} | Market activity |
+| MA Alignment | {ma_alignment} | Bull/Bear/Chaos |
+| Signal Score | {signal_score}/100 | System score |
+
+## Right-Side Decision Framework
+
+### HOLD conditions (any = hold)
+- Price below MA5 → short-term downtrend
+- Bias MA5 > +3% → short-term overbought
+- Bias MA5 < -5% → short-term oversold
+- Non-bullish MA alignment
+- Volume ratio < 0.8
+- Signal score < 40
+
+### BUY confirmation (must ALL meet)
+- Price above MA5
+- Bias MA5 in -2%~+2% range
+- Bullish MA alignment (MA5>MA10>MA20)
+- Volume ratio > 1.0
+- Wait for pullback to support
+
+## Output Requirements
+Based on the data above, apply strict right-side thinking. Output ONE sentence (within 30 chars).
+
+Format: Direction + Core Reason
+
+Examples:
+- "Hold, below MA5, wait for confirmation"
+- "Hold, bias +4% overbought, don't chase"
+- "Hold, low volume, wait for direction"
+- "Hold, bearish MA alignment"
+- "Buy, above MA5 + pullback confirmation"
+
+Output only one sentence (plain text only):"""
+
+    def _derive_operation_advice(
+        self,
+        ma5: Optional[float],
+        ma10: Optional[float],
+        ma20: Optional[float],
+        bias_ma5: Optional[float],
+        ma_status: str,
+        ma_alignment: str = "",
+        signal_score: float = 50,
+        report_language: str = "zh",
+    ) -> str:
+        """
+        基于技术指标推导操作建议（右侧思维）。
+
+        严格规则：
+        - 均线非多头 → 观望
+        - 偏离过大 → 观望
+        - 缩量 → 观望
+        """
+        report_language = normalize_report_language(report_language)
+        if report_language == "en":
+            return self._derive_operation_advice_en(
+                ma5=ma5, ma10=ma10, ma20=ma20, bias_ma5=bias_ma5, ma_alignment=ma_alignment
+            )
+
+        ma5_above_ma10 = ma5 and ma10 and ma5 > ma10
+        ma10_above_ma20 = ma10 and ma20 and ma10 > ma20
+        is_bullish = ma5_above_ma10 and ma10_above_ma20
+
+        if not is_bullish:
+            return "观望"
+
+        if bias_ma5 is not None:
+            if bias_ma5 > 4:
+                return "观望"
+            if bias_ma5 > 2:
+                return "持有"
+            if -2 <= bias_ma5 <= 2:
+                return "持有"
+            if bias_ma5 < -4:
+                return "观望"
+
+        return "观望"
+
+    def _derive_operation_advice_en(
+        self,
+        ma5: Optional[float],
+        ma10: Optional[float],
+        ma20: Optional[float],
+        bias_ma5: Optional[float],
+        ma_alignment: str = "",
+    ) -> str:
+        """Derive operation advice (right-side thinking) for English reports."""
+        ma5_above_ma10 = ma5 and ma10 and ma5 > ma10
+        ma10_above_ma20 = ma10 and ma20 and ma10 > ma20
+        is_bullish = ma5_above_ma10 and ma10_above_ma20
+
+        if not is_bullish:
+            return "Hold"
+
+        if bias_ma5 is not None:
+            if bias_ma5 > 4:
+                return "Hold"
+            if bias_ma5 > 2:
+                return "Hold"
+            if -2 <= bias_ma5 <= 2:
+                return "Hold"
+            if bias_ma5 < -4:
+                return "Hold"
+
+        return "Hold"
 
     def _build_market_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """构建当日行情快照（展示用）"""
