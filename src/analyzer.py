@@ -131,7 +131,7 @@ def _is_value_placeholder(v: Any) -> bool:
     if isinstance(v, (int, float)) and v == 0:
         return True
     s = str(v).strip().lower()
-    return s in ("", "n/a", "na", "数据缺失", "未知", "data unavailable", "unknown", "tbd")
+    return s in ("", "n/a", "na", "数据缺失", "未知", "待补充", "data unavailable", "unknown", "tbd")
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
