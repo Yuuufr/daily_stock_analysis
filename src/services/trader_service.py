@@ -69,26 +69,58 @@ class TraderAccountInfo:
 class TraderService:
     """LLM模拟交易员服务"""
 
-    SYSTEM_PROMPT = """你是【右侧思维】专业模拟交易员，拥有10年A股交易经验，风格稳健幽默。
+    SYSTEM_PROMPT = """你是【右侧思维】A股专业模拟交易员，拥有10年A股实战经验，风格稳健幽默。
 
-## 铁律（永不动摇）
-1. **只做右侧交易**：只在趋势确认后买入，不抄底不逃顶
-2. **宁错过勿做错**：没有100%确认信号坚决不买入
-3. **止损永远正确**：亏损时不幻想，果断止损离场
-4. **让利润奔跑**：盈利持仓可以持有，等待趋势反转
-5. **仓位管理**：单股仓位不超总资产的20%，分散持仓
-6. **不追高**：股价在MA5上方过远不追，等回调
+## A股交易规则（必须严格遵守）
 
-## 交易规则
-- 初始资金：5万元
-- 目标：用炒股赚1个亿（不现实但要追求）
-- 止损位：-5% 止损，或LLM根据个股情况设定
-- 止盈位：+10% 止盈，或LLM根据个股情况动态调整
-- 仓位：由LLM根据评分和风险自行决定（建议10%-20%）
-- 手续费：万3（买卖都收）
+### 交易时间
+- 上午：9:30-11:30
+- 下午：13:00-15:00
+- T+1制度：**当日买入的股票，当日不能卖出**
 
-## 输出格式
-必须严格按以下JSON格式输出，不要添加任何解释：
+### 交易单位
+- 买入：必须以100股（1手）的整数倍买入
+- 卖出：可以任意数量卖出（但需是100的整数倍）
+- 报价最小单位：0.01元
+
+### 涨跌停限制
+- 普通股票：±10%
+- ST股票：±5%
+- 科创板/创业板：±20%
+- 新股上市首日：无涨跌幅限制
+
+### 交易费用（必须精确计算）
+- 佣金：万3（双向收取，最低5元）
+- 印花税：千1（仅卖出时收取）
+- 过户费：万0.1（双向收取）
+- **实际交易成本 ≈ 买入万3.4 + 卖出万13.4 ≈ 买卖各0.034% + 0.134%**
+
+### 仓位管理
+- 单股仓位：不超过总资产的20%
+- 建议仓位：每只股票占总资产的10%-20%
+- 持股数量：同时持有不超过5只股票
+
+### 止损止盈规则
+- 固定止损：-7%止损（超过7%必须止损）
+- 固定止盈：+15%开始分批止盈
+- 动态调整：根据市场情况和个人判断调整
+
+## 右侧交易核心理念
+1. **只做右侧**：等股价站稳MA5且均线多头排列后才买入
+2. **宁错过勿做错**：没有100%把握不操作
+3. **严格止损**：亏损超过7%必须止损离场
+4. **让利润奔跑**：盈利持仓持有，等待趋势反转信号
+5. **不追高**：股价偏离MA5超过5%不追，等回调
+6. **顺势而为**：只做上升趋势的股票
+
+## 评分体系（0-100）
+- 评分>=70：强烈买入信号，右侧确认
+- 评分60-69：买入信号，可以考虑建仓
+- 评分45-59：观望信号，不操作
+- 评分30-44：卖出信号，考虑减仓
+- 评分<30：强烈卖出信号，清仓
+
+## 输出格式（严格按JSON输出）
 ```json
 {
   "actions": [
@@ -96,24 +128,25 @@ class TraderService:
       "side": "buy/sell/hold",
       "symbol": "股票代码",
       "name": "股票名称",
-      "quantity": 买入数量（手，整数）,
-      "price": 买入价格,
-      "stop_loss": 止损价（可为空）,
-      "take_profit": 止盈价（可为空）,
-      "reason": "操作理由（幽默有理）",
-      "mood": "心情描述（滑稽幽默）"
+      "quantity": 买入数量（必须是100的整数倍）,
+      "price": 买入价格（精确到分）,
+      "stop_loss": 止损价格,
+      "take_profit": 止盈价格,
+      "reason": "操作理由（有逻辑有数据）",
+      "mood": "心情描述（幽默风趣）"
     }
   ],
-  "thoughts": "内心独白（幽默有趣）"
+  "thoughts": "今日交易思路总结（幽默风趣）"
 }
 ```
 
-## 评分体系参考
-- 评分>65：强势信号，可考虑买入
-- 评分45-65：中性信号，谨慎观望
-- 评分<45：弱势信号，不参与
+## 决策优先级
+1. 先检查持仓，是否需要止损/止盈
+2. 再看市场整体走势
+3. 最后决定是否新买入
+4. 始终保留30%现金作为备用
 
-请根据以上信息做出今日交易决策。"""
+请根据以上信息，结合当前账户状态，做出今日交易决策！"""
 
     def __init__(self, db: Optional[DatabaseManager] = None):
         self.db = db or DatabaseManager.get_instance()
@@ -257,10 +290,55 @@ class TraderService:
         self._recalculate_account(session)
         session.commit()
 
+    def get_sellable_quantity(self, session: Session, symbol: str) -> float:
+        """
+        获取可卖出数量（A股T+1规则）
+        只有上一个交易日之前买入的股票才能今日卖出
+        """
+        account = self.get_or_create_account(session)
+        today = date.today()
+
+        all_trades = (
+            session.query(TraderTrade)
+            .filter_by(account_id=account.id, symbol=symbol, side="buy")
+            .order_by(TraderTrade.trade_date)
+            .all()
+        )
+
+        if not all_trades:
+            return 0.0
+
+        sellable = 0.0
+        bought_before_yesterday = 0.0
+
+        for trade in all_trades:
+            days_diff = (today - trade.trade_date).days
+            if days_diff >= 1:
+                bought_before_yesterday += trade.quantity
+
+        for trade in all_trades:
+            days_diff = (today - trade.trade_date).days
+            if days_diff >= 1:
+                sellable += trade.quantity
+
+        return sellable
+
     def execute_trades(self, session: Session, actions: List[Dict], trade_date: date) -> List[TraderTrade]:
-        """执行交易"""
+        """
+        执行交易（严格遵守A股规则）
+
+        A股规则：
+        - T+1：当日买入的股票，当日不能卖出
+        - 买入单位：100股（1手）的整数倍
+        - 卖出单位：100股（1手）的整数倍（不足100股可一次性卖出）
+        - 交易费用：佣金万3（双向）+ 印花税千1（卖出）+ 过户费万0.1（双向）
+        """
         account = self.get_or_create_account(session)
         executed = []
+
+        COMMISSION_RATE = 0.0003
+        STAMP_TAX_RATE = 0.001
+        TRANSFER_FEE_RATE = 0.00001
 
         for action in actions:
             if action.get("side") == "hold":
@@ -280,14 +358,21 @@ class TraderService:
                 continue
 
             amount = quantity * price
-            fee = amount * TRADE_FEE_RATE
 
             if side == "buy":
-                if amount + fee > account.current_cash:
-                    logger.warning(f"资金不足，跳过买入 {symbol}: 需要{amount+fee:.2f}，可用{account.current_cash:.2f}")
+                if quantity % 100 != 0:
+                    logger.warning(f"买入数量必须是100的整数倍，跳过 {symbol}: 尝试买入{quantity}股")
                     continue
 
-                account.current_cash -= (amount + fee)
+                total_fee = amount * (COMMISSION_RATE + TRANSFER_FEE_RATE)
+                if total_fee < 5:
+                    total_fee = 5
+
+                if amount + total_fee > account.current_cash:
+                    logger.warning(f"资金不足，跳过买入 {symbol}: 需要{amount+total_fee:.2f}，可用{account.current_cash:.2f}")
+                    continue
+
+                account.current_cash -= (amount + total_fee)
 
                 existing = (
                     session.query(TraderPosition)
@@ -328,33 +413,50 @@ class TraderService:
                     quantity=quantity,
                     price=price,
                     amount=amount,
-                    fee=fee,
+                    fee=total_fee,
                     realized_pnl=None,
                     trade_reason=reason,
                     trade_mood=mood,
                 )
                 session.add(trade)
                 executed.append(trade)
-                logger.info(f"买入 {name}({symbol}): {quantity}股@{price}, 理由:{reason[:50]}")
+                logger.info(f"买入 {name}({symbol}): {quantity}股@{price}, 手续费{total_fee:.2f}, 理由:{reason[:50]}")
 
             elif side == "sell":
+                sellable_qty = self.get_sellable_quantity(session, symbol)
                 existing = (
                     session.query(TraderPosition)
                     .filter_by(account_id=account.id, symbol=symbol)
                     .first()
                 )
 
-                if not existing or existing.quantity < quantity:
-                    logger.warning(f"持仓不足，跳过卖出 {symbol}")
+                if not existing or existing.quantity < 1:
+                    logger.warning(f"无持仓，跳过卖出 {symbol}")
                     continue
 
-                sell_amount = amount - fee
-                account.current_cash += sell_amount
+                sell_qty = min(quantity, int(existing.quantity / 100) * 100)
+                if sell_qty < 100 and sell_qty != existing.quantity:
+                    sell_qty = existing.quantity
 
-                cost_basis = existing.avg_cost * quantity
-                realized_pnl = sell_amount - cost_basis
+                if sell_qty <= 0:
+                    logger.warning(f"无可卖出数量（T+1限制），跳过卖出 {symbol}")
+                    continue
 
-                existing.quantity -= quantity
+                sell_amount = sell_qty * price
+                commission = sell_amount * COMMISSION_RATE
+                if commission < 5:
+                    commission = 5
+                stamp_tax = sell_amount * STAMP_TAX_RATE
+                transfer_fee = sell_amount * TRANSFER_FEE_RATE
+                total_fee = commission + stamp_tax + transfer_fee
+
+                net_amount = sell_amount - total_fee
+                cost_basis = existing.avg_cost * sell_qty
+                realized_pnl = net_amount - cost_basis
+
+                account.current_cash += net_amount
+
+                existing.quantity -= sell_qty
                 if existing.quantity <= 0:
                     session.delete(existing)
 
@@ -364,17 +466,17 @@ class TraderService:
                     name=name,
                     trade_date=trade_date,
                     side="sell",
-                    quantity=quantity,
+                    quantity=sell_qty,
                     price=price,
-                    amount=amount,
-                    fee=fee,
+                    amount=sell_amount,
+                    fee=total_fee,
                     realized_pnl=realized_pnl,
                     trade_reason=reason,
                     trade_mood=mood,
                 )
                 session.add(trade)
                 executed.append(trade)
-                logger.info(f"卖出 {name}({symbol}): {quantity}股@{price}, 盈利{realized_pnl:.2f}, 理由:{reason[:50]}")
+                logger.info(f"卖出 {name}({symbol}): {sell_qty}股@{price}, 手续费{total_fee:.2f}, 盈利{realized_pnl:.2f}, 理由:{reason[:50]}")
 
         self._recalculate_account(session)
         session.commit()
