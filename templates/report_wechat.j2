@@ -11,7 +11,13 @@
 {% if results|length > 1 %}
 **🏆 右侧思维 Top10 强势股**
 {% for e in enriched[:10] %}
-{{ loop.index }}. {{ e.signal_emoji }}{{ e.stock_name }} | {{ labels.score_label }}{{ e.result.sentiment_score }} | {{ e.localized_operation_advice }}
+{% set r = e.result %}
+{% set dash = r.dashboard if r.dashboard else {} %}
+{% set sniper = dash.get('battle_plan', {}).get('sniper_points', {}) if dash else {} %}
+{% set price = r.current_price if r.current_price else 'N/A' %}
+{% set stop = sniper.get('stop_loss', 'N/A') if sniper else 'N/A' %}
+{% set profit = sniper.get('take_profit', 'N/A') if sniper else 'N/A' %}
+{{ loop.index }}. {{ e.signal_emoji }}{{ e.stock_name }} | {{ labels.score_label }}{{ e.result.sentiment_score }} | {{ e.localized_operation_advice }} | 现价{{ price }} | 止盈{{ profit }} | 止损{{ stop }}
 {% endfor %}
 ---
 {% endif %}
