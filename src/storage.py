@@ -1514,7 +1514,7 @@ class DatabaseManager:
         
         context = {
             'code': code,
-            'date': today_data.date.isoformat(),
+            'date': today_data.timestamp.isoformat() if today_data.timestamp else None,
             'today': today_data.to_dict(),
         }
         

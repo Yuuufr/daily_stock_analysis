@@ -18,7 +18,7 @@ OVERALL_SENTINEL_CODE = "__overall__"
 class DailyBarLike(Protocol):
     """Protocol for objects representing a daily OHLC bar."""
 
-    date: date
+    timestamp: date
     high: Optional[float]
     low: Optional[float]
     close: Optional[float]
@@ -482,7 +482,7 @@ class BacktestEngine:
             if not stop_hit and not tp_hit:
                 continue
 
-            first_hit_date = bar.date
+            first_hit_date = bar.timestamp
             first_hit_days = idx
 
             if stop_hit and tp_hit:
