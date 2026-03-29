@@ -21,7 +21,8 @@ src/services/
 ├── social_sentiment_service.py # 社交舆情服务
 ├── stock_code_utils.py         # 股票代码工具
 ├── stock_service.py            # 股票服务
-├── agent_model_service.py      # Agent 模型服务
+├── agent_model_service.py       # Agent 模型服务
+├── trader_service.py           # LLM 模拟交易员服务
 └── report_renderer.py          # 报告渲染
 ```
 

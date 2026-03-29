@@ -139,6 +139,7 @@ project-root/
 │   ├── services/              # 业务服务层
 │   │   ├── analysis_service.py
 │   │   ├── history_service.py
+│   │   ├── history_comparison_service.py
 │   │   ├── portfolio_service.py
 │   │   ├── backtest_service.py
 │   │   ├── task_queue.py
@@ -148,6 +149,12 @@ project-root/
 │   │   ├── portfolio_import_service.py
 │   │   ├── image_stock_extractor.py
 │   │   ├── social_sentiment_service.py
+│   │   ├── stock_code_utils.py
+│   │   ├── stock_service.py
+│   │   ├── agent_model_service.py
+│   │   ├── trader_service.py
+│   │   ├── import_parser.py
+│   │   ├── name_to_code_resolver.py
 │   │   └── report_renderer.py
 │   │
 │   ├── agent/                 # Agent 策略对话系统
