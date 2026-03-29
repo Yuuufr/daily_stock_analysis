@@ -7,7 +7,8 @@
 {% for e in enriched %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
 {% endfor %}
-{% else %}
+{% endif %}
+
 {% if results|length > 1 %}
 **🏆 右侧思维 Top10 强势股**
 {% for e in enriched[:10] %}
@@ -21,6 +22,8 @@
 {% endfor %}
 ---
 {% endif %}
+
+{% if not summary_only %}
 {% for e in enriched %}
 {% set result = e.result %}
 {% set dashboard = result.dashboard if result.dashboard else {} %}
