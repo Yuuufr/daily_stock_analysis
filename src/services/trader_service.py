@@ -9,7 +9,9 @@ LLM模拟交易员服务
 4. 生成交易报告和通知
 """
 
+import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Tuple
@@ -563,9 +565,6 @@ class TraderService:
             if not response:
                 return "LLM未返回有效响应，保持观望", []
 
-            import json
-            import re
-
             json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
             if json_match:
                 json_str = json_match.group(1)
@@ -574,7 +573,8 @@ class TraderService:
                 if json_match:
                     json_str = json_match.group(0)
                 else:
-                    return "无法解析LLM响应", []
+                    logger.warning(f"[Trader] LLM returned non-JSON response: {response[:500]}")
+                    return f"LLM返回非JSON格式，保持观望", []
 
             data = json.loads(json_str)
             actions = data.get("actions", [])
@@ -582,6 +582,9 @@ class TraderService:
 
             return thoughts, actions
 
+        except json.JSONDecodeError as e:
+            logger.warning(f"[Trader] JSON decode failed: {e}, response: {response[:500] if response else 'None'}")
+            return f"JSON解析失败，保持观望", []
         except Exception as e:
             logger.error(f"LLM交易决策失败: {e}")
             return f"LLM决策出错: {str(e)[:100]}", []

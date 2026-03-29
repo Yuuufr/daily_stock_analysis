@@ -1114,6 +1114,42 @@ class GeminiAnalyzer:
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
+                error_str = str(e).lower()
+                is_rate_limit = (
+                    'rate limit' in error_str or
+                    '429' in error_str or
+                    'ratelimit' in error_str or
+                    'too many requests' in error_str
+                )
+                if is_rate_limit:
+                    for retry_attempt in range(3):
+                        wait_time = 2 ** retry_attempt
+                        logger.warning(
+                            f"[LiteLLM] {model} rate limited, retrying in {wait_time}s "
+                            f"(attempt {retry_attempt + 1}/3): {e}"
+                        )
+                        time.sleep(wait_time)
+                        try:
+                            if use_channel_router and self._router and model in _router_model_names:
+                                response = self._router.completion(**call_kwargs)
+                            elif self._router and model == config.litellm_model and not use_channel_router:
+                                response = self._router.completion(**call_kwargs)
+                            else:
+                                response = litellm.completion(**call_kwargs)
+
+                            if response and response.choices and response.choices[0].message.content:
+                                usage = {}
+                                if response.usage:
+                                    usage = {
+                                        "prompt_tokens": response.usage.prompt_tokens or 0,
+                                        "completion_tokens": response.usage.completion_tokens or 0,
+                                        "total_tokens": response.usage.total_tokens or 0,
+                                    }
+                                return (response.choices[0].message.content, model, usage)
+                        except Exception as retry_e:
+                            logger.warning(f"[LiteLLM] {model} retry {retry_attempt + 1} failed: {retry_e}")
+                            continue
+
                 logger.warning(f"[LiteLLM] {model} failed: {e}")
                 last_error = e
                 continue
